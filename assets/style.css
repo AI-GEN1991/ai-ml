@@ -792,3 +792,7 @@ body { background: var(--bg); color: var(--ink); }
 .frame:fullscreen { max-width: none; width: 100vw; height: 100vh; aspect-ratio: auto; border-radius: 0; background: #000; }
 .frame:-webkit-full-screen { max-width: none; width: 100vw; height: 100vh; border-radius: 0; background: #000; }
 @media (max-width: 600px) { .yt-full .t { display: none; } }
+
+/* a topic with several sheets: small kicker above each sheet's title */
+.ws-part { display: block; font-size: .72rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted, #8a8172); margin-bottom: 2px; }
+.ws-sub .ws-no { font-size: 1rem; }
