@@ -620,7 +620,7 @@ body.viewing .player .frame { z-index: auto; }
 @media (prefers-reduced-motion: reduce) { .perch .bit.mood-idle, .perch-say { animation: none; } }
 
 /* ---------- view-only worksheet pages ---------- */
-.sheet-page { width: 100%; max-width: 900px; aspect-ratio: 210 / 297; margin: 0 auto 14px; background: var(--surface) center / contain no-repeat;
+.sheet-page { width: 100%; max-width: 900px; aspect-ratio: var(--page-ratio, 210 / 297); margin: 0 auto 14px; background: var(--surface) center / contain no-repeat;
   box-shadow: 0 2px 12px rgba(0, 0, 0, .35); -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 .viewer-pages { -webkit-user-select: none; user-select: none; }
 

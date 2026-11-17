@@ -928,12 +928,14 @@
   function viewerNote(text) { pages.innerHTML = '<p class="viewer-note">' + esc(text) + '</p>'; }
 
   function openViewer(li) {
+    pages.style.removeProperty('--page-ratio');
     var list = (li.querySelector('.open').getAttribute('data-pages') || '').split('|').filter(Boolean);
     openPages(list, num(li) + '  ' + title(li), li.id, li.querySelector('.open').getAttribute('data-pdf'));
   }
   function openBook() {
     var b = $('pbook-open');
-    openPages((b && b.getAttribute('data-pages') || '').split('|').filter(Boolean), 'Practice Book: all practice sets, module by module', null,
+    if (b && b.getAttribute('data-ratio')) pages.style.setProperty('--page-ratio', b.getAttribute('data-ratio'));
+    openPages((b && b.getAttribute('data-pages') || '').split('|').filter(Boolean), (b && b.getAttribute('data-heading')) || 'Practice Book: all practice sets, module by module', null,
       b && b.getAttribute('data-pdf'));
   }
   function openPages(list, heading, id, pdf) {
