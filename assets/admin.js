@@ -1,6 +1,10 @@
 /* 10-Minute Worksheets | Binary Star | (c) Ashwini Kumar Mathur
    Class dashboard. Only the course admin's Google account can read every student's
-   record (enforced by the Firestore rules); anyone else sees a polite "not allowed". */
+   record (enforced by the Firestore rules); anyone else sees a polite "not allowed".
+   One dashboard for both courses: the switcher shows Computer Vision or AI and ML.
+   Both sites share one Firebase project, so each course's students are told apart by
+   what they did there: ticks on that course's worksheets (a01.. or r01..) or likes on
+   its lectures. The dashboard only reads; it never writes to a student's record. */
 (function () {
   'use strict';
 
@@ -15,11 +19,41 @@
   var SITE = readConfig();
   var CFG = SITE.firebase && SITE.firebase.apiKey ? SITE.firebase : null;
   var SDK = SITE.firebaseSdk || 'https://www.gstatic.com/firebasejs/10.12.2/';
-  var COURSE = SITE.course || [];
-  var IDS = {}; COURSE.forEach(function (w) { IDS[w.id] = w; });
-  var VIDEO = {}; COURSE.forEach(function (w) { w.videos.forEach(function (v) { if (!VIDEO[v.id]) VIDEO[v.id] = { title: v.title, ws: w }; }); });
-  var N = COURSE.length;
   var DAY = 864e5;
+
+  // The two courses live on one origin: CV at the site root, AI and ML under /ai-ml/.
+  var HERE = /^\/ai-ml\//.test(location.pathname) ? 'aiml' : 'cv';
+  var COURSES = [
+    { key: 'cv', name: 'Computer Vision', path: '/admin.html', site: '/', course: null },
+    { key: 'aiml', name: 'AI and ML', path: '/ai-ml/admin.html', site: '/ai-ml/', course: null }
+  ];
+  COURSES.forEach(function (c) { if (c.key === HERE) c.course = SITE.course || []; });
+  var CUR = null, COURSE = [], IDS = {}, VIDEO = {}, N = 0;
+
+  function courseOf(key) { return COURSES.filter(function (c) { return c.key === key; })[0] || COURSES[0]; }
+  function useCourse(key) {
+    CUR = courseOf(key);
+    COURSE = CUR.course || [];
+    IDS = {}; COURSE.forEach(function (w) { IDS[w.id] = w; });
+    VIDEO = {}; COURSE.forEach(function (w) { w.videos.forEach(function (v) { if (!VIDEO[v.id]) VIDEO[v.id] = { title: v.title, ws: w }; }); });
+    N = COURSE.length;
+  }
+  // the other course's worksheet list comes from its own admin page (same origin, read only)
+  function fetchCourse(c) {
+    if (c.course) return Promise.resolve();
+    return fetch(c.path, { credentials: 'omit', cache: 'no-cache' }).then(function (r) { return r.text(); }).then(function (html) {
+      var doc = new DOMParser().parseFromString(html, 'text/html');
+      var el = doc.getElementById('site-config');
+      c.course = (JSON.parse(el ? el.textContent : '{}').course) || [];
+    }).catch(function () { c.course = []; });
+  }
+  function savedCourse() {
+    var h = (location.hash || '').slice(1);
+    if (h === 'cv' || h === 'aiml') return h;
+    try { var k = localStorage.getItem('adm-course'); if (k === 'cv' || k === 'aiml') return k; } catch (e) {}
+    return HERE;
+  }
+  useCourse(savedCourse());
 
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return '&#' + c.charCodeAt(0) + ';'; }); }
@@ -34,7 +68,7 @@
     return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
   }
 
-  var fb = null, user = null, students = [], stats = {}, msgs = [], q = '';
+  var fb = null, user = null, raw = [], students = [], unknown = 0, stats = {}, allMsgs = [], msgs = [], q = '';
 
   /* ---------- gate ---------- */
   function gate(state, text) {
@@ -90,27 +124,18 @@
     $('adm-updated').textContent = 'Loading…';
     var F = fb.f;
     Promise.all([F.getDocs(F.collection(fb.db, 'users')), F.getDocs(F.collection(fb.db, 'stats')),
-                 F.getDocs(F.query(F.collection(fb.db, 'feedback'), F.orderBy('at', 'desc'), F.limit(200)))])
+                 F.getDocs(F.query(F.collection(fb.db, 'feedback'), F.orderBy('at', 'desc'), F.limit(200))),
+                 Promise.all(COURSES.map(fetchCourse))])
       .then(function (r) {
-        students = [];
-        r[0].forEach(function (d) {
-          var v = d.data(), doneIds = Object.keys(v.done || {}).filter(function (k) { return IDS[k]; });
-          var last = null;
-          doneIds.forEach(function (k) { var t = when(v.done[k]); if (t && (!last || t > last)) last = t; });
-          students.push({
-            uid: d.id, name: v.name || '(no name)', email: v.email || '', photo: v.photo || '',
-            done: v.done || {}, doneIds: doneIds, n: doneIds.length, lastDone: last,
-            seen: when(v.lastSeen), created: when(v.created),
-            likes: Object.keys(v.reacts || {}).filter(function (k) { return k.indexOf('v_') === 0; }).length,
-            sub: !!(v.reacts && v.reacts.channel)
-          });
-        });
-        students.sort(function (a, b) { return b.n - a.n || (b.seen || 0) - (a.seen || 0); });
+        raw = [];
+        r[0].forEach(function (d) { raw.push({ uid: d.id, v: d.data() }); });
         stats = {};
         r[1].forEach(function (d) { stats[d.id] = d.data(); });
-        msgs = [];
-        r[2].forEach(function (d) { var v = d.data(); v.id = d.id; msgs.push(v); });
+        allMsgs = [];
+        r[2].forEach(function (d) { var v = d.data(); v.id = d.id; allMsgs.push(v); });
+        useCourse(CUR.key);
         gate('in');
+        build();
         render();
       })
       .catch(function (e) {
@@ -120,6 +145,54 @@
           gate('denied', 'Could not load the class data. Check your connection and reload.');
         }
       });
+  }
+
+  /* ---------- one course's students ---------- */
+  // A student belongs to a course when they ticked one of its worksheets or liked one of its lectures.
+  function ofCourse(v, c) {
+    var ids = {}, vids = {};
+    (c.course || []).forEach(function (w) { ids[w.id] = 1; w.videos.forEach(function (x) { vids['v_' + x.id] = 1; }); });
+    return Object.keys(v.done || {}).some(function (k) { return ids[k]; }) ||
+      Object.keys(v.reacts || {}).some(function (k) { return vids[k]; });
+  }
+  function build() {
+    students = []; unknown = 0;
+    var mine = {}, known = {};
+    raw.forEach(function (rec) {
+      var v = rec.v;
+      if (!COURSES.some(function (c) { return ofCourse(v, c); })) { unknown++; return; }
+      known[rec.uid] = 1;
+      if (!ofCourse(v, CUR)) return;
+      mine[rec.uid] = 1;
+      var doneIds = Object.keys(v.done || {}).filter(function (k) { return IDS[k]; });
+      var last = null;
+      doneIds.forEach(function (k) { var t = when(v.done[k]); if (t && (!last || t > last)) last = t; });
+      students.push({
+        uid: rec.uid, name: v.name || '(no name)', email: v.email || '', photo: v.photo || '',
+        done: v.done || {}, doneIds: doneIds, n: doneIds.length, lastDone: last,
+        seen: when(v.lastSeen), created: when(v.created),
+        likes: Object.keys(v.reacts || {}).filter(function (k) { return k.indexOf('v_') === 0 && VIDEO[k.slice(2)]; }).length,
+        sub: !!(v.reacts && v.reacts.channel)
+      });
+    });
+    students.sort(function (a, b) { return b.n - a.n || (b.seen || 0) - (a.seen || 0); });
+    // messages: from this course's students, plus senders whose course is not known yet
+    msgs = allMsgs.filter(function (m) { m.unknown = !known[m.uid]; return mine[m.uid] || m.unknown; });
+  }
+
+  function renderSwitch() {
+    $('adm-course').innerHTML = COURSES.map(function (c) {
+      return '<button type="button" data-course="' + c.key + '" aria-pressed="' + (c.key === CUR.key) + '">' + esc(c.name) + '</button>';
+    }).join('');
+  }
+  function switchCourse(key) {
+    if (!key || key === CUR.key) return;
+    useCourse(key);
+    try { localStorage.setItem('adm-course', key); } catch (e) {}
+    history.replaceState(null, '', '#' + key);
+    q = ''; $('adm-q').value = '';
+    build();
+    render();
   }
 
   /* ---------- render ---------- */
@@ -137,17 +210,21 @@
     var ticks = students.reduce(function (a, s) { return a + s.n; }, 0);
     var weekTicks = 0;
     students.forEach(function (s) { s.doneIds.forEach(function (k) { var t = when(s.done[k]); if (t && t.getTime() >= weekAgo) weekTicks++; }); });
-    var likes = 0, subs = (stats.channel && stats.channel.subs) || 0;
-    Object.keys(stats).forEach(function (k) { if (k.indexOf('v_') === 0) likes += Math.max(0, stats[k].likes || 0); });
+    // likes on this course's lectures only; subscribers counted among this course's students
+    var likes = 0, subs = students.filter(function (s) { return s.sub; }).length;
+    Object.keys(stats).forEach(function (k) { if (k.indexOf('v_') === 0 && VIDEO[k.slice(2)]) likes += Math.max(0, stats[k].likes || 0); });
+    renderSwitch();
+    document.title = 'Class dashboard: ' + CUR.name + ' | 10-Minute Worksheets';
 
     $('adm-updated').textContent = 'Updated ' + new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) +
-      ' · ' + N + ' worksheets in the course';
+      ' · ' + CUR.name + ': ' + N + ' worksheets' +
+      (unknown ? ' · ' + unknown + ' signed in with no activity yet (course not known)' : '');
     var d = document.querySelector('.adm-bit .bit');
     d.classList.remove('mood-idle'); d.classList.add(weekTicks ? 'mood-fire' : 'mood-happy');
     setTimeout(function () { d.classList.remove('mood-fire', 'mood-happy'); d.classList.add('mood-happy'); }, 2000);
     $('adm-say').textContent = S
       ? S + (S === 1 ? ' student' : ' students') + ', ' + weekTicks + ' worksheet' + (weekTicks === 1 ? '' : 's') + ' smashed this week!'
-      : 'No students yet. Share the site link!';
+      : 'No ' + CUR.name + ' students yet. Share the site link!';
 
     $('kpis').innerHTML =
       kpi(S, 'Students signed in', started + ' started') +
@@ -173,6 +250,7 @@
     $('msgs').innerHTML = msgs.length ? msgs.map(function (m) {
       var subj = encodeURIComponent('Re: your ' + (m.topic || 'message').toLowerCase() + ' on ' + document.title.split('|').pop().trim());
       return '<li class="msg"><div class="msg-top"><span class="px-chip">' + esc(m.topic) + '</span>' +
+        (m.unknown ? '<span class="px-chip">Course not known</span>' : '') +
         '<strong>' + esc(m.name || '(no name)') + '</strong>' +
         '<a href="mailto:' + encodeURIComponent(m.email || '') + '?subject=' + subj + '">' + esc(m.email || '') + '</a>' +
         '<span class="msg-when">' + ago(when(m.at)) + '</span></div>' +
@@ -180,10 +258,10 @@
     }).join('') : '<li class="adm-sub">No messages yet.</li>';
 
     // reactions
-    var vids = Object.keys(stats).filter(function (k) { return k.indexOf('v_') === 0 && (stats[k].likes || 0) > 0; })
+    var vids = Object.keys(stats).filter(function (k) { return k.indexOf('v_') === 0 && VIDEO[k.slice(2)] && (stats[k].likes || 0) > 0; })
       .map(function (k) { var id = k.slice(2), v = VIDEO[id]; return { likes: stats[k].likes, title: v ? v.title : id, ws: v ? v.ws.no + ' ' + v.ws.title : '' }; })
       .sort(function (a, b) { return b.likes - a.likes; });
-    $('reactions').innerHTML = '<div class="react-sum"><span class="px-chip">🔔 ' + subs + ' subscribed on this site</span>' +
+    $('reactions').innerHTML = '<div class="react-sum"><span class="px-chip">🔔 ' + subs + (subs === 1 ? ' student' : ' students') + ' tapped Subscribe</span>' +
       '<span class="px-chip">❤ ' + likes + ' likes in total</span></div>' +
       (vids.length ? '<ol class="react-list">' + vids.map(function (v) {
         return '<li><span class="rl-n">❤ ' + v.likes + '</span><span class="rl-t">' + esc(v.title) + '<small>' + esc(v.ws) + '</small></span></li>';
@@ -225,7 +303,7 @@
     }).join('\n');
     var a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' }));
-    a.download = 'class-progress-' + new Date().toISOString().slice(0, 10) + '.csv';
+    a.download = 'class-progress-' + CUR.key + '-' + new Date().toISOString().slice(0, 10) + '.csv';
     document.body.appendChild(a); a.click(); a.remove();
   }
 
@@ -235,8 +313,11 @@
     else if (t.closest('#signout') || t.closest('#gate-out')) fb.a.signOut(fb.auth);
     else if (t.closest('#adm-refresh')) load();
     else if (t.closest('#adm-csv')) csv();
+    else if (t.closest('[data-course]')) switchCourse(t.closest('[data-course]').getAttribute('data-course'));
   });
   $('adm-q').addEventListener('input', function () { q = this.value.toLowerCase().trim(); renderStudents(); });
+
+  window.addEventListener('hashchange', function () { var h = location.hash.slice(1); if (raw.length && (h === 'cv' || h === 'aiml')) switchCourse(h); });
 
   init();
 })();
